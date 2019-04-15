@@ -1,18 +1,22 @@
 
 #include <sever.h>
+#include <fstream>
+
 using namespace std;
 
+int picLen=0;
+
+int num=0;
+int i=0;
 char inputBuffer[256] = {};
-char message[]="hi";
 int port=8700;
 bool runFlag;
 int forClientSockfd = 0;
 int sockfd = 0;       //sockfd套接字
 int recvbytes=0;                          //判断是否断开连接
+int map_flag=0;
 struct sockaddr_in serverInfo,clientInfo; // clientInfo连接实体地址
 socklen_t addrlen = sizeof(clientInfo);
-
-//u_char mes=1;
 
 void server();
 RecvContainer *Receive();
@@ -46,6 +50,8 @@ bool SeverInit()
     thread t1(server);
     t1.detach();
 
+
+
     return true;
 
 }
@@ -57,82 +63,79 @@ void server() {
         runFlag=true;
         while(runFlag) {
             RecvContainer *container_ptr=Receive();
-            if(runFlag)
+            if(container_ptr)
             {
                 buffer_pool_.push_back(*container_ptr);
             }
             usleep(100);
         }
+        usleep(10000);
     }
+
 }
 
 RecvContainer *Receive()
 {
+    //read the file
+    //ROS_INFO("run Receive");
+    char ctl_mes[4]={};
     RecvContainer *recv_container=recv_container_ptr_;
-    memset(inputBuffer, 0, sizeof(inputBuffer));
-    recvbytes = recv(forClientSockfd, inputBuffer, sizeof(inputBuffer), 0);
-    /**
-     * 处理粘包
-     */
-    if (inputBuffer[0] == inputBuffer[1] == inputBuffer[4] == 'F' || inputBuffer[5] == 'E') {
-        inputBuffer[6] = '\0';
-    }
+    memset(ctl_mes, 0, sizeof(ctl_mes));
+    recvbytes = recv(forClientSockfd, ctl_mes, sizeof(ctl_mes), 0);
+
+
     /**
      * 异常情况退出
      */
     if(recvbytes==0||recvbytes==-1){
+        ROS_INFO("Receive error !!!");
         runFlag=false;
+        return nullptr;
         //return 0;
     }
-    /**
-     * 接口
-     */
-    u_char mes=0;
-    switch (inputBuffer[3]){
-        case 'U':
-            mes=1;
-            break;
-        case 'D':
-            mes=2;
-            break;
-        case 'L':
-            mes=3;
-            break;
-        case 'R':
-            mes=4;
-            break;
-        case 'S':
-            mes=5;
-            break;
-        default:
-            mes=0;
+
+    if(ctl_mes[0]=='A'&&ctl_mes[1]=='A') {
+        ROS_INFO("Receive req for map send!");
+        map_flag = 1;
+        return nullptr;
     }
-    //printf("%d\n", sizeof(RecvContainer));
-    //printf("Get:%s\n", inputBuffer);
-   // printf("%c\n",mes);
-    printf("recv_container_ptr_=%d\n", recv_container->direct_cmd);
-    recv_container->direct_cmd=mes;
-    return recv_container;
+    else if(ctl_mes[0]=='C'&&ctl_mes[1]=='T') {
+
+
+        recv_container->direct_cmd_v_angle=ctl_mes[2];
+        recv_container->direct_cmd_v_line=ctl_mes[3];
+        //ROS_INFO("Receive direct_cmd_v_line: %d  direct_cmd_v_angle: %d",\
+        recv_container->direct_cmd_v_line,recv_container->direct_cmd_v_angle );
+    }
+        return recv_container;
 
 }
+
 
 
 bool Take(RecvContainer *recv_container)
 {
-    //printf("run Take\n");
-    //RecvContainer *recv_container=new RecvContainer();
     if(!buffer_pool_.size())return false;
     else{
-        //printf("run Take\n");
-        printf("\nbuffer_pool_.size=%d\n",buffer_pool_.size());
         *recv_container=buffer_pool_.front();
-        printf("run Take%d\n",recv_container->direct_cmd);
         buffer_pool_.erase(buffer_pool_.begin());
         return true;
     }
-
 }
 
+bool Send(MapMessage &send_map_message)
+{
+    ROS_INFO("run send");
+  if(map_flag==1)
+  {
+        ROS_INFO("map_flag==1");
+        send(forClientSockfd, send_map_message.data_ptr, send_map_message.map_head.width.at* \
+        send_map_message.map_head.height.at + sizeof(MapHead), 0);
+        ROS_INFO("Map send success!!");
+      return true;
+  }
+    return false;
+}
 
 
 
