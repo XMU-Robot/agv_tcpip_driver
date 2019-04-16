@@ -8,9 +8,10 @@ int main(int argc, char **argv) {
     ros::NodeHandle nh;
     if(!SeverInit()) return 1;
     if(!HandleInit(nh))return 1;
+    ros::Rate main_loop_rate(1000);
     while(ros::ok()){
         handle_spin();
         ros::spinOnce();
-        usleep(1000);
+        main_loop_rate.sleep();
     }
 }

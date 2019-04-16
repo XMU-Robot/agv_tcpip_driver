@@ -6,65 +6,156 @@
 
 using namespace std;
 void handle_spin();
-
+void MapCallback(const nav_msgs::OccupancyGridConstPtr& map);
 ros::Publisher ros_cmd_vel_pub;
-enum DirectCmd direct_cmd_;
+ros::Subscriber ros_map_sub;
+uint8_t map_data_buff[MAP_SIZE_RANGE*MAP_SIZE_RANGE + sizeof(MapHead)];
+float max_v_line=MAX_CMD_V_LINE;
+float max_v_angle=MAX_CMD_V_ANGLE;
+uint8_t req_map_state = 0;
+void tf_listener();
 bool HandleInit(ros::NodeHandle ros_nh)
 {
-
     ros_cmd_vel_pub = ros_nh.advertise<geometry_msgs::Twist>("cmd_vel", 30);
-    printf("run HandleInit\n");
-
-   // thread t2(handle_spin);
-  //  t2.detach();
+    ros_map_sub = ros_nh.subscribe("map",1,&MapCallback);
+    ROS_INFO("run HandleInit");
+    thread t2(tf_listener);
+    t2.detach();
     return true;
+}
 
+void CmdSend(const int8_t id,const int8_t len,void *data_ptr)
+{
+    CmdMessage send_message;
+    send_message.head.id = id;
+    send_message.head.len = len;
+    memcpy(send_message.data,data_ptr, len); // when send map , len is 0 , will pass
+    send_message.data_ptr = data_ptr;
+    Send(send_message);
+}
+
+void tf_listener()
+{
+    ros::Rate tf_listener_loop_rate(2);
+    tf::TransformListener tf_pose_listener;
+    while(1) {
+        SendRobotPose *send_robot_pose = new SendRobotPose();
+        tf::StampedTransform pose_transform;
+        try {
+            tf_pose_listener.lookupTransform("/map", "/base_footprint",  // find tf
+                                             ros::Time(0), pose_transform);
+        }
+        catch (tf::TransformException &ex) {
+            ROS_ERROR("%s", ex.what());
+            //ros::Duration(1.0).sleep();
+            continue;
+        }
+        send_robot_pose->pose_x_m = pose_transform.getOrigin().x();
+        send_robot_pose->pose_y_m = pose_transform.getOrigin().y();
+        ROS_INFO("Received tf from map to base_footprint --- x:%f  y:%f",
+                 send_robot_pose->pose_x_m,
+                 send_robot_pose->pose_y_m);
+        CmdSend(CMD_SEND_ROBOT_POSE, sizeof(SendRobotPose), send_robot_pose);
+        tf_listener_loop_rate.sleep();
+    }
+}
+
+void MapCallback(const nav_msgs::OccupancyGridConstPtr& map) {
+    ROS_INFO("Received a %d X %d map @ %.3f m/pix",
+             map->info.width,
+             map->info.height,
+             map->info.resolution);
+    if(req_map_state==0) {//req map state
+        ROS_INFO("req_map_state is false");
+        return;
+    }
+    if (map->info.width > MAP_SIZE_RANGE || map->info.height > MAP_SIZE_RANGE) {
+        MapMessage *send_map_message=new MapMessage();
+        send_map_message->map_head.width.at= map->info.width;
+        send_map_message->map_head.height.at= map->info.height;
+        memcpy(map_data_buff,send_map_message, sizeof(MapHead));
+
+        for (unsigned int y = 0; y < map->info.height; y++) {
+            for (unsigned int x = 0; x < map->info.width; x++) {
+                unsigned int i = x + y * map->info.width;
+
+                map_data_buff[sizeof(MapHead) + i] = map->data[i];
+            }
+        }
+        send_map_message->data_ptr = map_data_buff;
+        CmdSend(CMD_SEND_MAP,0,  send_map_message->data_ptr);
+    }
+    else ROS_ERROR("map is out of size!");
 }
 
 
+void CmdCtlReqMap(const ReqMap *value){
+    req_map_state=value->req_value;
+    ROS_INFO("Receive req_map_state: %d",req_map_state );
+}
+
+void CmdCtlSetAgvSpeed(const SetAgvSpeed *value){
+
+    geometry_msgs::Twist cmd_vel_;
+    cmd_vel_.linear.x = (value->v_line * max_v_line) / 128.0 ;
+    cmd_vel_.angular.z = -(value->v_angle * max_v_angle) /128.0 ;
+    cmd_vel_.linear.y=0.0;
+    cmd_vel_.linear.z=0.0;
+    cmd_vel_.angular.x=0.0;
+    cmd_vel_.angular.y=0.0;
+    ros_cmd_vel_pub.publish(cmd_vel_);
+
+    static int time=0;
+    time++;
+    if(time==25) {
+        time=0;
+        ROS_INFO("Receive cmd_vel_.linear.x: %f  cmd_vel_.angular.z: %f",
+                          cmd_vel_.linear.x, cmd_vel_.angular.z);
+    }
+}
+void CmdCtlSetSpeedRange(const SetSpeedRange *value){
+    if((value->max_v_line/10.0>=2*MAX_CMD_V_LINE)||(value->max_v_angle/10.0>=2*MAX_CMD_V_ANGLE)){
+        ROS_INFO("Set Speed Range is error!");
+        return;
+    }
+    max_v_line=value->max_v_line/10.0;
+    max_v_angle=value->max_v_angle/10.0;
+    ROS_INFO("Receive max_v_line: %d  max_v_angle: %d",value->max_v_line,value->max_v_angle );
+    ROS_INFO("Receive max_v_line: %f  max_v_angle: %f",max_v_line,max_v_angle );
+}
+
+void CmdProcess(const CmdMessage* recv)
+{
+
+    switch (recv->head.id)
+    {
+        case CMD_REQ_MAP:{
+            ReqMap *req_map=new ReqMap();
+            memcpy(req_map, recv->data, sizeof(ReqMap));
+            CmdCtlReqMap(req_map);
+        }break;
+        case CMD_SET_AGV_SPEED: {
+            SetAgvSpeed *set_agv_speed = new SetAgvSpeed();
+            memcpy(set_agv_speed, recv->data, sizeof(SetAgvSpeed));
+            CmdCtlSetAgvSpeed(set_agv_speed);
+        }break;
+        case CMD_SET_SPEED_RANGE:{
+            SetSpeedRange *set_speed_range=new SetSpeedRange();
+            memcpy(set_speed_range, recv->data, sizeof(SetSpeedRange));
+            CmdCtlSetSpeedRange(set_speed_range);
+        }break;
+
+    }
+}
 
 
 void handle_spin()
 {
-    //printf("run handle_spin\n");
-    static geometry_msgs::Twist cmd_vel_;
-    RecvContainer *recv_container=new RecvContainer();
+    CmdMessage *recv_container=new CmdMessage();
     if(Take(recv_container))
     {
-
-
-        printf("run handle_spin  %d\n",recv_container->direct_cmd);
-        switch ((enum DirectCmd) recv_container->direct_cmd)
-        {
-            case UP:
-                cmd_vel_.linear.x = 0.5;
-                cmd_vel_.angular.z = 0.0;
-                break;
-            case DOWN:
-                cmd_vel_.linear.x = -0.5;
-                cmd_vel_.angular.z = 0.0;
-                break;
-            case LEFT:
-                cmd_vel_.linear.x = 0.0;
-                cmd_vel_.angular.z = 0.5;
-                break;
-            case RIGHT:
-                cmd_vel_.linear.x = 0.0;
-                cmd_vel_.angular.z = -0.5;
-                break;
-            case STOP:
-                cmd_vel_.linear.x = 0.0;
-                cmd_vel_.angular.z = 0.0;
-            default:
-                cmd_vel_.linear.x = 0.0;
-                cmd_vel_.angular.z = 0.0;
-        }
-        cmd_vel_.linear.y=0.0;
-        cmd_vel_.linear.z=0.0;
-        cmd_vel_.angular.x=0.0;
-        cmd_vel_.angular.y=0.0;
-
+        CmdProcess(recv_container); //cmd process
     }
-    ros_cmd_vel_pub.publish(cmd_vel_);
-    usleep(200);
+    //tf_listener();
+    //usleep(1000);
 }
