@@ -37,20 +37,20 @@ void handle_spin()
         switch ((enum DirectCmd) recv_container->direct_cmd)
         {
             case UP:
-                cmd_vel_.linear.x = 0.5;
+                cmd_vel_.linear.x = 0.3;
                 cmd_vel_.angular.z = 0.0;
                 break;
             case DOWN:
-                cmd_vel_.linear.x = -0.5;
+                cmd_vel_.linear.x = -0.3;
                 cmd_vel_.angular.z = 0.0;
                 break;
             case LEFT:
                 cmd_vel_.linear.x = 0.0;
-                cmd_vel_.angular.z = 0.5;
+                cmd_vel_.angular.z = 0.3;
                 break;
             case RIGHT:
                 cmd_vel_.linear.x = 0.0;
-                cmd_vel_.angular.z = -0.5;
+                cmd_vel_.angular.z = -0.3;
                 break;
             case STOP:
                 cmd_vel_.linear.x = 0.0;
@@ -66,5 +66,5 @@ void handle_spin()
 
     }
     ros_cmd_vel_pub.publish(cmd_vel_);
-    usleep(200);
+    usleep(1000);
 }
