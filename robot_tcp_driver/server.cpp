@@ -1,9 +1,16 @@
 
 #include <sever.h>
+#include <fstream>
+
 using namespace std;
 
+int picLen=0;
+
+int num=0;
+int i=0;
 char inputBuffer[256] = {};
-char message[]="hi";
+u_char cmdReceiveData[256]={};
+u_char cmdSendData[256]={};
 int port=8700;
 bool runFlag;
 int forClientSockfd = 0;
@@ -12,14 +19,12 @@ int recvbytes=0;                          //判断是否断开连接
 struct sockaddr_in serverInfo,clientInfo; // clientInfo连接实体地址
 socklen_t addrlen = sizeof(clientInfo);
 
-//u_char mes=1;
-
 void server();
-RecvContainer *Receive();
+CmdMessage *Receive();
 
-std::vector<RecvContainer> buffer_pool_;
+std::vector<CmdMessage> buffer_pool_;
 
-RecvContainer *recv_container_ptr_;
+CmdMessage *recv_container_ptr_;
 
 
 bool SeverInit()
@@ -41,10 +46,12 @@ bool SeverInit()
      */
     listen(sockfd,5);
 
-    recv_container_ptr_=new RecvContainer();
+    recv_container_ptr_=new CmdMessage();
 
     thread t1(server);
     t1.detach();
+
+
 
     return true;
 
@@ -52,87 +59,110 @@ bool SeverInit()
 
 void server() {
 
+    ros::Rate server_loop_rate(50);
     while (1) {
         forClientSockfd = accept(sockfd, (struct sockaddr *) &clientInfo, &addrlen);
         runFlag=true;
+        ros::Rate receive_loop_rate(1000);
         while(runFlag) {
-            RecvContainer *container_ptr=Receive();
-            if(runFlag)
+            CmdMessage *container_ptr=Receive();
+            if(container_ptr)
             {
                 buffer_pool_.push_back(*container_ptr);
             }
-            usleep(100);
+            //usleep(100);
+            receive_loop_rate.sleep();
         }
+        server_loop_rate.sleep();
+        //usleep(10000);
     }
+
 }
 
-RecvContainer *Receive()
-{
-    RecvContainer *recv_container=recv_container_ptr_;
-    memset(inputBuffer, 0, sizeof(inputBuffer));
-    recvbytes = recv(forClientSockfd, inputBuffer, sizeof(inputBuffer), 0);
-    /**
-     * 处理粘包
-     */
-    if (inputBuffer[0] == inputBuffer[1] == inputBuffer[4] == 'F' || inputBuffer[5] == 'E') {
-        inputBuffer[6] = '\0';
-    }
-    /**
-     * 异常情况退出
-     */
-    if(recvbytes==0||recvbytes==-1){
-        runFlag=false;
+CmdMessage *Receive() {
+    //read the file
+    //ROS_INFO("run Receive");
+    char head_temp[sizeof(CmdHead)] = {};
+    CmdMessage *recv_container = recv_container_ptr_;
+    memset(head_temp, 0, sizeof(head_temp));
+    recvbytes = recv(forClientSockfd, head_temp, sizeof(head_temp), 0);
+
+
+    //!异常情况退出
+    if (recvbytes == 0 || recvbytes == -1) {
+        ROS_INFO("Receive error 1!!!");
+        runFlag = false;
+        return nullptr;
         //return 0;
     }
-    /**
-     * 接口
-     */
-    u_char mes=0;
-    switch (inputBuffer[3]){
-        case 'U':
-            mes=1;
-            break;
-        case 'D':
-            mes=2;
-            break;
-        case 'L':
-            mes=3;
-            break;
-        case 'R':
-            mes=4;
-            break;
-        case 'S':
-            mes=5;
-            break;
-        default:
-            mes=0;
+    recv_container->head.sof = head_temp[0];
+    recv_container->head.id = head_temp[1];
+    recv_container->head.len = head_temp[2];
+    if (recv_container->head.sof == HEAD_SOF){// head check
+        recvbytes = recv(forClientSockfd, cmdReceiveData, recv_container->head.len + 1, 0); //receive all data and frame tail
+        if (recvbytes == 0 || recvbytes == -1) {
+            ROS_INFO("Receive error 2!!!");
+            runFlag = false;
+            return nullptr;
+        }
+        recv_container->tail = cmdReceiveData[recv_container->head.len];// frame tail
+        if (recv_container->tail == HEAD_TAIL){// tail check
+            cmdReceiveData[recv_container->head.len]=0x00; //frame tail clean;
+            memcpy(recv_container->data, cmdReceiveData, recv_container->head.len);
+        }else{
+            ROS_INFO("Receive frame tail error !!!");
+            ROS_INFO("cmdReceiveData:");
+            for(int i=0;i<recv_container->head.len + 1;i++)ROS_INFO("|%d|",cmdReceiveData[i]);
+            return nullptr;
+        }
+    }else{
+        ROS_INFO("Receive frame head error !!!");
+        return nullptr;
     }
-    //printf("%d\n", sizeof(RecvContainer));
-    //printf("Get:%s\n", inputBuffer);
-   // printf("%c\n",mes);
-    printf("recv_container_ptr_=%d\n", recv_container->direct_cmd);
-    recv_container->direct_cmd=mes;
+
     return recv_container;
 
 }
 
 
-bool Take(RecvContainer *recv_container)
+
+bool Take(CmdMessage *recv_container)
 {
-    //printf("run Take\n");
-    //RecvContainer *recv_container=new RecvContainer();
     if(!buffer_pool_.size())return false;
     else{
-        //printf("run Take\n");
-        printf("\nbuffer_pool_.size=%d\n",buffer_pool_.size());
+        //ROS_INFO("recv_container SIZE %d",(int)buffer_pool_.size());
         *recv_container=buffer_pool_.front();
-        printf("run Take%d\n",recv_container->direct_cmd);
         buffer_pool_.erase(buffer_pool_.begin());
         return true;
     }
-
 }
 
+bool Send(CmdMessage &send_container)
+{
+    send_container.head.sof=HEAD_SOF;
+    send_container.tail=HEAD_TAIL;
+    cmdSendData[0]=send_container.head.sof;
+    cmdSendData[1]=send_container.head.id;
+    cmdSendData[2]=send_container.head.len;
+    if(send_container.head.id==CMD_SEND_MAP){ //if send map data
+        cmdSendData[3]=send_container.tail;
+        MapHead *map_head=new MapHead(); // build map head use to compute map data lenth
+        memcpy(map_head,send_container.data_ptr,sizeof(MapHead));
+        ROS_INFO("map_head->height.at=%d, map_head->width.at=%d",map_head->height.at,map_head->width.at);
+        send(forClientSockfd, cmdSendData,sizeof(CmdHead), 0); //send cmd head
+        send(forClientSockfd, send_container.data_ptr,map_head->height.at * map_head->width.at + sizeof(MapHead), 0); //send map message
+        send(forClientSockfd, cmdSendData + sizeof(CmdHead), sizeof(uint8_t), 0);//send cmd tail
+
+    }
+    else{
+        cmdSendData[send_container.head.len + sizeof(CmdHead)]=send_container.tail;
+        memcpy(cmdSendData + sizeof(CmdHead),send_container.data,send_container.head.len);
+        send(forClientSockfd, cmdSendData,send_container.head.len + sizeof(CmdHead) + sizeof(uint8_t) , 0);
+    }
+
+        ROS_INFO("CmdMessage send success!!");
+      return true;
+}
 
 
 

@@ -9,6 +9,7 @@
 #include <thread>
 #include <tcp_define.h>
 #include <geometry_msgs/Twist.h>
+#include "nav_msgs/OccupancyGrid.h"
 
 bool HandleInit(ros::NodeHandle ros_nh);
 void handle_spin();
