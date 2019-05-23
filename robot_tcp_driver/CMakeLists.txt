@@ -12,15 +12,18 @@ find_package(catkin REQUIRED COMPONENTS
   roscpp
   rospy
   std_msgs
+  move_base_msgs
   message_generation
+  tf
 )
 
-#catkin_package(
-#  INCLUDE_DIRS include
-#  LIBRARIES beginner_tutorials
-#  CATKIN_DEPENDS roscpp rospy std_msgs message_runtime
-#  DEPENDS system_lib
-#)
+catkin_package(
+  CATKIN_DEPENDS
+  geometry_msgs
+  move_base_msgs
+  nav_msgs
+  roscpp
+)
 
 ###########
 ## Build ##
